@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+
 import '../fmx/bop_codec.dart';
 
 int _foAccepted(Uint8List iv) {
@@ -44,6 +45,11 @@ bool notificationAdvancesSeq(Uint8List inner) {
     if (mirrored != null) {
       return mirrored;
     }
+    /// BOP §11.2 Table 46 (**`A`**, order id **`@17`**, side **`@47`**, qty **`@48`**, inst **`@56`**, px **`@64`**).
+    final tab46 = _parseAcceptedTable46(iv);
+    if (tab46 != null) {
+      return tab46;
+    }
     final fo = _foAccepted(iv);
     if (iv.length <= fo || iv[fo] != 0x41) {
       return null;
@@ -58,6 +64,40 @@ bool notificationAdvancesSeq(Uint8List inner) {
     final instId = bd.getUint64(qtyOff + 8, Endian.little);
     final priceScaled = bd.getInt64(qtyOff + 16, Endian.little);
     return (orderId: orderId, qty: qty, priceScaled: priceScaled, instrumentId: instId, buySide: buySide);
+  } catch (_) {
+    return null;
+  }
+}
+
+({String orderId, int qty, int priceScaled, int instrumentId, bool buySide})? _parseAcceptedTable46(Uint8List iv) {
+  const minNeed = 72;
+  if (iv.lengthInBytes < minNeed || iv[0] != 0x41) {
+    return null;
+  }
+  try {
+    final bd = ByteData.sublistView(iv);
+    final oid = stripAscii(bd, 17, 30);
+    if (oid.trim().isEmpty) {
+      return null;
+    }
+    final sideByte = latin1AsciiChar(iv[47]);
+    if (sideByte != 'B' && sideByte != 'S') {
+      return null;
+    }
+    final buySide = sideByte == 'B';
+    final qty = bd.getUint64(48, Endian.little);
+    final instId = bd.getUint64(56, Endian.little);
+    final priceScaled = bd.getInt64(64, Endian.little);
+    if (qty <= 0 || qty > 0xFFFFFFFFFFFF) {
+      return null;
+    }
+    return (
+      orderId: oid,
+      qty: qty,
+      priceScaled: priceScaled,
+      instrumentId: instId,
+      buySide: buySide,
+    );
   } catch (_) {
     return null;
   }

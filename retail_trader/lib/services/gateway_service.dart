@@ -69,6 +69,9 @@ class GatewayService extends ChangeNotifier {
   final List<String> messageLog = [];
   final Map<String, OrderBlotRow> blotByOrderId = {};
 
+  /// Latest limit enter key (client order id); used to clear **Sent …** when **`A`** echoes a different broker id.
+  String? _pendingClientEnterOrderKey;
+
   List<OrderBlotRow> get blotRows {
     final l = blotByOrderId.values.toList();
     l.sort((a, b) => b.updated.compareTo(a.updated));
@@ -168,6 +171,7 @@ class GatewayService extends ChangeNotifier {
       lastInstrumentId = 0;
       lastPriceHintByInstrumentId.clear();
     }
+    _pendingClientEnterOrderKey = null;
     notifyListeners();
   }
 
@@ -285,6 +289,22 @@ class GatewayService extends ChangeNotifier {
           blotByOrderId.remove(k);
         }
       }
+      /// Server may ACK with a broker id **`!=`** client blot key — drop lingering **Sent …** row.
+      final pendRaw = _pendingClientEnterOrderKey;
+      _pendingClientEnterOrderKey = null;
+      if (pendRaw != null) {
+        final pend = pendRaw.trimRight();
+        if (pend.isNotEmpty && pend != ackKey) {
+          final pk = _findBlotKeyForOrderId(pend);
+          if (pk != null) {
+            final pendingRow = blotByOrderId[pk];
+            if (pendingRow != null && pendingRow.status.startsWith('Sent')) {
+              blotByOrderId.remove(pk);
+            }
+          }
+        }
+      }
+
       final px = ia.priceScaled / kPriceScalingFactor;
       final sym = catalog.symbolForId(ia.instrumentId, fallback: 'id:${ia.instrumentId}');
       lastAcceptedOrderId = ackKey;
@@ -368,6 +388,16 @@ class GatewayService extends ChangeNotifier {
       final bk = _findBlotKeyForOrderId(rj.orderId);
       if (bk != null) {
         _markRejected(bk, rj.reason, rj.reqType);
+      }
+      final pend = _pendingClientEnterOrderKey;
+      if (pend != null) {
+        final pendTrim = pend.trimRight();
+        final rejectTrim = rj.orderId.trimRight();
+        final pb = _findBlotKeyForOrderId(pend);
+        if ((bk != null && pb == bk) ||
+            (rejectTrim.isNotEmpty && rejectTrim == pendTrim)) {
+          _pendingClientEnterOrderKey = null;
+        }
       }
     }
   }
@@ -575,6 +605,7 @@ class GatewayService extends ChangeNotifier {
         updated: _timestamp(),
         instrumentId: instrumentId,
       );
+      _pendingClientEnterOrderKey = oidKey;
 
       lastInstrumentId = instrumentId;
       lastBuySide = sideBuy;
